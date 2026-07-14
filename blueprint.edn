@@ -1,0 +1,11 @@
+{:itonami.blueprint/id "cloud-itonami-isic-0311"
+ :itonami.blueprint/name "Marine Fishing Fleet Operations Coordination Actor"
+ :itonami.blueprint/isic-rev5 "0311"
+ :itonami.blueprint/domain :agriculture/marine-fishing-operations
+ :itonami.blueprint/license "AGPL-3.0-or-later"
+ :itonami.blueprint/social-impact [:fishing-fleet-coordination :catch-record-transparency :fleet-safety-escalation]
+ :itonami.blueprint/governor :marine-fishing-operations-governor
+ :itonami.blueprint/robotics false
+ :itonami.blueprint/required-technologies [:identity :audit-ledger :dmn :forms]
+ :itonami.blueprint/optional-technologies [:telemetry :quota-tracking]
+ :itonami.blueprint/status :public-oss}

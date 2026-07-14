@@ -3,7 +3,7 @@
 ## The Problem
 
 Commercial fishing fleets operate under multiple jurisdictional regulations:
-- Catch logging and quota compliance (Japan FAA, EU CFP)
+- Catch logging and quota compliance
 - Vessel maintenance requirements
 - Supply chain coordination
 - Crew safety reporting
@@ -18,41 +18,46 @@ Today's fleets use paper logs, email spreadsheets, and verbal handoffs, creating
 
 This actor provides an open-source fleet operations coordinator that any qualified fishing operator can fork, deploy, and customize:
 
-1. **Vessel & Permit Registry** — Authoritative registry of vessels, permits, and quota allocations
-2. **Catch Logging** — Structured catch records with species, quantity, location, timestamp
-3. **Quota Tracking** — Compliance reporting against jurisdiction-specific quotas
-4. **Maintenance Scheduling** — Proposals for preventive and reactive maintenance
-5. **Supply Ordering** — Automated procurement proposals (fuel, gear, provisions)
-6. **Safety Escalation** — Immediate notification of safety concerns to crew/captain
+1. **Vessel & Permit Registry** — authoritative registry of vessels, permits, and quota allocations (`fishing.store/vessel`)
+2. **Catch Logging** — structured catch records with species and quantity, accrued against permit quota (`fishing.store/log-catch!`)
+3. **Maintenance Scheduling** — proposals for preventive and reactive maintenance (`fishing.store/schedule-maintenance!`)
+4. **Supply Ordering** — procurement proposals for fuel, gear, provisions (`fishing.store/order-supply!`)
+5. **Safety Escalation** — immediate notification of safety concerns to crew/captain (`fishing.store/flag-safety-concern!`)
+
+This actor is **coordination only** — it never navigates the vessel, operates fishing gear, or makes catch decisions. See the README and ADR-0001 for the full scope boundary.
 
 ## Revenue Models for Implementers
 
 Fishing fleet operators who deploy this actor can monetize it:
 
-1. **Fleet Management SaaS** — Host the actor on cloud infrastructure, provide a UI, charge per vessel
-2. **Compliance Auditing** — Audit fleets' catch logs and quotas, certify compliance to regulators
-3. **Supply Chain Integration** — Connect to fuel/gear suppliers, earn commission on orders
-4. **Insurance/Risk Management** — Bundle with vessel insurance, use audit ledger for claims
-5. **Consulting** — Help fleets adapt the actor to local regulations
+1. **Fleet Management SaaS** — host the actor on cloud infrastructure, provide a UI, charge per vessel
+2. **Compliance Auditing** — audit fleets' catch logs and quota accrual, certify compliance to regulators
+3. **Supply Chain Integration** — connect to fuel/gear suppliers, earn commission on orders
+4. **Insurance/Risk Management** — bundle with vessel insurance, use the audit ledger for claims
+5. **Consulting** — help fleets adapt the actor to local regulations and quota regimes
 
 ## Technical Deployment Paths
 
 ### Self-Hosted (fishing fleet)
 - Clone repo
-- Run on fleet's own infrastructure
-- Integrate with existing vessel systems via REST/WebSocket
-- Maintain audit ledger locally or on Datomic
+- Run on the fleet's own infrastructure
+- Integrate with existing vessel systems via a thin adapter that calls
+  `fishing.operation/build` with the fleet's own `Store` implementation
+- Maintain the audit ledger locally or on Datomic (swap `fishing.store`'s
+  `MemStore` for a Datomic-backed implementation of the same `Store`
+  protocol)
 
 ### Managed Deployment (service provider)
 - Fork repo
-- Add multi-tenant database layer (Datomic per fleet, or multi-tenant Datomic)
+- Add a multi-tenant `Store` implementation (Datomic per fleet, or
+  multi-tenant Datomic)
 - Deploy on Kubernetes/cloud
-- Offer white-label UI
+- Offer a white-label UI
 - Provide compliance certification
 
 ### Hybrid (fleet + service provider)
 - Vessel systems run the actor locally
-- Sync audit ledger to central compliance auditor weekly
+- Sync the audit ledger to a central compliance auditor periodically
 - Central auditor provides regulatory reporting and appeals
 
 ## Open Source + Business
@@ -66,8 +71,16 @@ This "copyleft" model ensures the fishing community benefits from improvements w
 
 ## Expected Impact
 
-1. **Compliance**: Automated catch logging reduces regulatory violations and penalties
-2. **Safety**: Immediate escalation of safety concerns saves lives at sea
-3. **Sustainability**: Quota tracking prevents overfishing and supports marine conservation
-4. **Efficiency**: Automated maintenance and supply ordering reduces fleet downtime
-5. **Transparency**: Append-only audit ledger provides evidence for claims/disputes
+1. **Compliance**: automated, quota-aware catch logging reduces regulatory violations
+2. **Safety**: immediate escalation of safety concerns supports faster response at sea
+3. **Sustainability**: hard quota enforcement (not a soft/overridable check) helps prevent overfishing
+4. **Efficiency**: automated maintenance and supply-ordering proposals reduce fleet downtime
+5. **Transparency**: append-only audit ledger provides evidence for claims/disputes
+
+## Honest Scope Note
+
+This actor does not itself provide jurisdiction-specific regulatory-fact
+lookup, citation validation, or a compliance-report generator — those
+would be legitimate future extensions, but are not implemented in this
+repository today. Do not assume they exist; check `src/fishing/` for the
+actual module list.

@@ -1,120 +1,137 @@
-# ADR-0001: Marine Fishing Operations Coordinator Architecture
+# ADR-0001: Marine Fishing Fleet Operations Coordination Actor Architecture
 
-**Status:** Implemented
-
-**Date:** 2026-07-14
-
-## Summary
-
-This document defines the architecture of the Marine Fishing Operations Coordinator actor for ISIC 0311 (Marine fishing). The actor coordinates fleet operations logistics and compliance, NOT vessel navigation, fishing-gear operation, or catch decisions.
+## Status
+Accepted (corrects and replaces an earlier version of this ADR that
+described a design — keyword-scanning governor rules, a `fish.facts`
+jurisdiction catalog, `fish.store`/`fish.advisor` namespaces, "100% code
+coverage" claims — that was never actually implemented or tested. This
+revision describes the actual, tested implementation under
+`src/fishing/`.)
 
 ## Context
 
-Marine fishing requires:
-1. Vessel and permit registry and verification
-2. Catch-record logging with quota tracking
-3. Vessel maintenance scheduling (proposals only)
-4. Supply ordering and procurement (proposals only)
-5. Safety concern escalation (immediate to captain/crew)
-6. Strict separation of concerns: an LLM advisor cannot make maritime authority decisions
+Commercial fishing fleets require coordination of back-office operations
+— catch-record/quota logging, maintenance scheduling, safety-concern
+escalation, and supply ordering. These are primarily back-office
+coordination tasks. However, critical maritime decisions (vessel
+navigation, fishing-gear operation, catch decisions) must remain with the
+vessel captain — the sole human authority at sea.
 
-The actor follows the cloud-itonami pattern: LLM advisor proposes, independent governor evaluates against hard safety gates, human (captain/fleet manager) reviews/approves for all operations.
+The governance model must separate:
+- **Coordination proposals** (advisory/proposal-stage) — which the LLM
+  can generate
+- **Human-exclusive authority** (navigation, gear operation, catch
+  decisions) — which are permanently blocked, structurally, with no
+  human-approval override path
+- **Escalation points** (safety concerns, high-cost supplies, low
+  confidence) — which require human review before commit
 
-## Design Decisions
+## Decision
 
-### 1. **No Navigation or Vessel-Command Authority**
+Implement a marine fishing fleet operations actor using the cloud-itonami
+pattern (mirroring `cloud-itonami-isic-0321`, Marine aquaculture):
 
-The actor is forbidden from:
-- Navigating vessels or setting course/heading
-- Operating fishing gear (nets, lines, hooks)
-- Making catch decisions (where/when to fish, target species, quota allocation)
-- Controlling engines or fuel systems
-- Making weather/sea-state decisions
+1. **Governor** (`fishing.governor`): independent compliance layer that
+   enforces hard rules
+   - Vessel/permit must be verified and `:status :active` before any
+     action
+   - All effects are `:propose` only (coordination, not direct
+     actuation)
+   - A closed op allowlist (`op->effect`) is the only legitimate set of
+     proposals; ops outside it (navigation, vessel-command, catch
+     decisions) are hard-blocked, permanently
+   - A catch record whose quantity would push cumulative landed weight
+     past the vessel's permit quota is a hard, permanent block (a
+     regulatory compliance breach, not a judgment call — never a soft
+     escalation)
+   - Safety concerns and high-cost supplies always escalate to a human
 
-**Implementation:** `fish.governor` has hard blocks that reject any proposal mentioning navigation, gear operation, catch authority, or engine control, regardless of confidence or evidence quality.
+2. **Store Protocol** (`fishing.store`): abstracted data layer
+   - In-memory implementation for development/testing
+   - Future swap path to Datomic/kotoba-server
+   - Append-only audit ledger for all operations
+   - Tracks cumulative landed weight per vessel for quota enforcement
 
-### 2. **Jurisdiction-Specific Catch Regulations (Honest Catalog)**
+3. **LLM Advisor** (`fishing.llm-advisor`): proposal generator
+   - Mock implementation for testing
+   - Real LLM injection point via protocol
+   - No external service calls in the base module
+   - Can only ever generate ops within the governor's closed allowlist —
+     it has no notion of navigation, gear operation, or catch decisions
 
-Each jurisdiction (Japan, EU) has its own catch-logging and quota requirements, all backed by official citations. The catalog is deliberately small (2 jurisdictions) to honestly represent coverage: we claim only what we verify with official spec-basis.
+4. **State Machine** (`fishing.operation`): langgraph-clj graph
+   - Linear flow: request → advise → govern → decide → commit | hold |
+     escalate
+   - Checkpointed operation (one graph run = one auditable operation)
+   - No unbounded loops
 
-**File:** `src/fish/facts.cljc`
+## Operations
 
-### 3. **Governor Contract with Hard and Soft Gates**
+**Allowed proposals (closed allowlist, all `:effect :propose`):**
+- `:log-catch-record` — catch/quota data logging (administrative, not a
+  fishing decision)
+- `:schedule-vessel-maintenance` — maintenance scheduling proposal
+- `:flag-safety-concern` — surface a vessel-safety/weather concern,
+  ALWAYS escalates
+- `:order-supplies` — fuel/gear/provisions procurement proposal
 
-**Hard violations (no override):**
-- No spec-basis citation for high-stakes proposals
-- Vessel/permit not verified
-- Navigation keywords present (navigate, course, helm, etc.)
-- Fishing-gear keywords present (net, trawl, deploy, etc.)
-- Catch-decision keywords present (target, allocation, quota, etc.)
-- Engine/fuel control keywords present (throttle, engine, fuel, etc.)
+**Blocked permanently (not in the allowlist; hard-rejected if proposed):**
+- `:navigate-vessel` — vessel captain's exclusive authority
+- `:command-vessel` — vessel captain's exclusive authority
+- `:decide-catch` — vessel captain's exclusive authority
 
-**Soft violations (human can approve):**
-- Low confidence (< 0.6)
-- High-stakes actuation (catch record logging, supply orders)
+**Hard Governor Rules (no human override):**
+1. Vessel verification: `:vessel-id` must exist and have `:status
+   :active`
+2. Effect integrity: proposal `:effect` must match `:op`
+3. Coordination-only: all effects must be `:propose`
+4. Forbidden fields: `:vessel-id`, `:permit-number`, `:vessel-status`
+   never modifiable
+5. Blocked operations: `:navigate-vessel`, `:command-vessel`,
+   `:decide-catch` rejected outright
+6. Quota exceedance: a `:log-catch-record` proposal whose
+   `:quantity-kg` would push cumulative `:landed-kg` past `:quota-kg` is
+   rejected outright, permanently — no human sign-off can override this
 
-**File:** `src/fish/governor.cljc`
+**Escalation Triggers (human review required, not a rejection):**
+- Safety-concern flags (always)
+- Supply orders >= 10,000 units (default threshold)
+- Advisor confidence < 0.6
 
-### 4. **Proposal-Only Operations**
+## What this actor does NOT do
 
-The actor proposes catch records, maintenance schedules, and supply orders but never executes them. A human (captain, fleet manager, or crew) reviews and approves before actuation.
+This actor has **no navigation authority, no fishing-gear-operation
+authority, and no catch-decision authority**. It never sets a course or
+heading, never operates or directs fishing gear, never decides
+what/where/when to fish or how quota is allocated, and never commands the
+vessel (engine, throttle, propulsion). Those decisions are the vessel
+captain's exclusive human authority at sea, permanently, with no
+override path through this actor.
 
-### 5. **Safety Concerns Always Escalate Immediately**
+## Consequences
 
-Any safety concern (engine overheating, weather hazard, equipment failure) is flagged immediately to the captain/crew with no delay. No human approval gate delays safety escalations.
+- **Coordination safety**: the LLM cannot propose navigation, gear
+  operation, or catch decisions — those ops simply do not exist in its
+  legitimate vocabulary, and the governor structurally rejects them if
+  generated anyway
+- **Regulatory safety**: quota exceedance is caught and blocked before
+  it can be logged as a committed catch record
+- **Audit transparency**: all operations are logged with proposer,
+  governor verdict, and human decisions
+- **Captain authority preservation**: the vessel captain retains
+  exclusive authority over navigation, gear, and catch decisions
+- **Extensibility**: store protocol allows future swap to persistent
+  database
+- **Testability**: pure governor checks and store protocol enable
+  comprehensive contract tests
 
-## Implementation
+## Testing
 
-- **Language:** Portable Clojure (`.cljc`)
-- **Runtime:** langgraph-clj StateGraph (JVM/Chicory/ClojureScript/browser WASM)
-- **State Store:** In-memory atom (reference), Datomic for production
-- **Audit Ledger:** Append-only (via langgraph-clj checkpoint system)
-- **Tests:** JVM-based (clojure.test), 100% coverage of governor contract
-
-## Scope Boundaries
-
-### IN SCOPE
-- Vessel and permit registration/verification
-- Catch-record logging with species and quantity
-- Quota tracking and compliance reporting
-- Maintenance scheduling **proposals** (human executes)
-- Supply ordering **proposals** (human approves/executes)
-- Safety concern detection and escalation
-- Compliance report generation
-- Escalation logic for violations
-
-### OUT OF SCOPE (NEVER, by design)
-- **Vessel navigation** — course, heading, waypoint, autopilot
-- **Fishing-gear operation** — net deployment, trawling, gear hauling
-- **Catch decisions** — target species, quota allocation, when/where to fish
-- **Engine/fuel control** — throttle, propulsion, fuel management
-- **Weather/sea-state decisions** — navigation planning based on conditions
-
-## Safety Contract
-
-This actor enforces a permanent safety contract: any proposal mentioning navigation authority, fishing-gear operation, catch decisions, or engine control is rejected with a hard violation, even if approved by a human. The contract is codified in `fish.governor`'s keyword block lists and cannot be overridden.
-
-## Regulatory Compliance
-
-Catch logging and quota tracking comply with:
-- Japan Fisheries Resource Protection Act (2024)
-- EU Common Fisheries Policy (2023)
-- IMO maritime safety regulations
-
-Citations are required in every catch-logging proposal and are validated by the governor before acceptance.
-
-## Audit Trail
-
-Every proposal, approval, escalation, and actuation is logged to an append-only audit ledger. This ledger provides:
-- Complete record of all decisions and their justifications
-- Regulatory compliance evidence
-- Incident investigation record
-
-## Testing Strategy
-
-- 100% code coverage of `fish.governor` contract
-- Phase state-machine validation
-- Storage contract compliance
-- Jurisdiction-specific regulatory fact lookups
-- Hard block keyword detection (navigation, gear, catch, engine)
-- High-stakes escalation gates
+- Governor contract tests: all hard rules (vessel verification, effect
+  integrity, propose-only, forbidden fields, blocked operations, quota
+  exceedance) and soft escalations (safety concern, high-cost supply,
+  low confidence)
+- Store contract tests: vessel lookup, quota accrual, audit trail,
+  maintenance scheduling, supply ordering
+- Run via `clojure -M:test`; see the repository's CI workflow
+  (`.github/workflows/test.yml`) for the exact invocation
