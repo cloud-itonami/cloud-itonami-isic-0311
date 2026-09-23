@@ -1,6 +1,6 @@
 (ns fishing.governor-contract-test
   "Contract tests for the MarineFishingOperationsGovernor."
-  (:require [clojure.test :refer [deftest is]]
+  (:require [kotoba.test :refer [deftest is]]
             [fishing.governor :as governor]
             [fishing.store :as store]))
 
